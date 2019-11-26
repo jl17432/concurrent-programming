@@ -8,61 +8,54 @@ import (
 
 func buildWorld(world [][]byte, index, subHeight, imageWidth int,numOfWorker int) [][]byte{
 
-	start := index * subHeight - 1                                  //define our upper and lower bound, upper bound can be -1 which is the last column,
-	end := (index + 1) * subHeight + 1                                // lower bound can be larger than the total height
-	workPlace := make([][]byte,subHeight + 2)                         //initialize the workplace we return
+//make a new world with height of workers' world plus 2
+	workPlace := make([][]byte,subHeight + 2)
 	for i := range workPlace{
 		workPlace[i] = make([]byte, imageWidth)
 	}
 
-	if start == -1 {
-		workPlace[0] = world[numOfWorker * subHeight - 1]
-		for j := 1; j <= end; j++ {
-			k := 1
-			workPlace[k] = world[j]
-			k += 1
+	//create a switch sentence to deal with the cases that height out of boundary
+	switch index{
+	//height of -1
+	case 0:
+		workPlace[0] = world[len(world) - 1]
+		for y := 1; y < subHeight + 2; y++{
+			for x := 0; x < imageWidth; x++{
+				workPlace[y][x] = world[index * subHeight + y - 1][x]
+			}
 		}
-	}
-	if end > numOfWorker * subHeight - 1{
-		for j := 0; j <= subHeight; j++ {
-			k := 0
-			workPlace[k] = world[j]
-			k += 1
-		}
-		workPlace[subHeight+1] = world[0]
-	}
 
-	if start < end && start > 0 && end <= numOfWorker * subHeight-1{
-		for j := start; j <= end; j++ {
-			k := 0
-			workPlace[k] = world[j]
-			k += 1
+	//height of imageHeight + 1
+	case numOfWorker - 1:
+		workPlace[subHeight + 1] = world[0]
+		for y := 0; y < subHeight + 1; y++{
+			for x := 0; x < imageWidth; x++{
+				workPlace[y][x] = world[index * subHeight + y - 1][x]
+			}
+		}
+
+	//height in the boundary
+	default:
+		for y := 0; y < subHeight + 2; y++{
+			for x := 0; x < imageWidth; x++{
+				workPlace[y][x] = world[index * subHeight + y - 1][x]
+			}
 		}
 	}
-	fmt.Println(workPlace)
 	return workPlace
+	//return the cut world and wait to be sent to workers
 }
 
+//a function that deal with every single world parts and return the next turn of this part
+//the output with height + 2
 func worker(workerWorld [][]byte, out chan<- [][]byte){
 	nextWorldPart := schrodinger(workerWorld)
 	out <- nextWorldPart
 }
 
-func cut(plusTwo [][]byte)[][]byte{
-	cutHeight := len(plusTwo) - 2
-	cutWidth := len(plusTwo[0])
-	cutPart := make([][]byte, cutHeight)
-	for i := range cutPart {
-		cutPart[i] = make([]byte, cutWidth)
-	}
-	for i := 1; i < cutHeight - 1; i++{
-		k := 0
-		cutPart[k] = plusTwo[i]
-		k += 1
-	}
-	return cutPart
-}
-
+//the logic of the Game Of Live
+//i call it schrodinger because if you dont observe the cat(which is the world containing cells),
+// u will never know whether it is alive
 func schrodinger(cat [][]byte)[][]byte{
 	imageHeight := len(cat)
 	imageWidth := len(cat[0])
@@ -71,16 +64,15 @@ func schrodinger(cat [][]byte)[][]byte{
 		nextWorld[i] = make([]byte, imageWidth)
 	}
 	//create a for loop go through all cells in the world
-	for y := 0; y < imageHeight; y++ {
-		if y == 0{continue}
+	for y := 1; y < imageHeight - 1; y++ {
 		for x := 0; x < imageWidth; x++ {
-			if x == 0{continue}
 			//create a int value that counts how many alive neighbours does a cell have
 			aliveNeighbours := 0
+			//extract the 3x3 matrix which centred at the cell itself
+			//go through every neighbour and count the aliveNeighbours
 			for i := -1; i < 2; i++{
 				for j := -1; j < 2; j++{
-					if i == 0 && j == 0{continue}                          //I don't care if the cell is alive or dead at this stage
-
+					if i == 0 && j == 0{continue}                                              //I don't care if the cell itself is alive or dead at this stage
 					if cat[y + i][(x + j + imageWidth) % imageWidth] == 255{                  //if there is an alive neighbour, the count of alive neighbours increase by 1
 						aliveNeighbours += 1
 					}
@@ -128,23 +120,29 @@ func distributor(p golParams, d distributorChans, alive chan []cell) {
 
 	// Calculate the new state of Game of Life after the given number of turns.
 	for turns := 0; turns < p.turns; turns++ {
-		//make a 2-D array to store the information for next round
-		nextWorld := make([][]byte, 0)
-		for i := range nextWorld {
-			nextWorld[i] = make([]byte, 0)
-		}
-		//nextWorld := schrodinger(world)
+		//calculate the height of the world every worker get
+		subHeight := p.imageHeight/p.threads
+
+		//creat the out channel
 		out := make([]chan[][]byte, p.threads)
 		for i := range out{
 			out[i] = make (chan [][]byte)
 		}
 
+		//split the world and distribute them to workers
+		for i := 0; i < p.threads; i++{
+			workerPlace := buildWorld(world, i, subHeight, p.imageWidth, p.threads)
+			go worker(workerPlace, out[i])
+		}
 
-		for i := 0; i <= p.threads; i++{
-			workerWorld := buildWorld(world, i, p.imageHeight/p.threads, p.imageWidth, p.threads)
-			go worker(workerWorld, out[i])
-			nextPart := <- out[i]
-			nextWorld = append(nextWorld, nextPart...)
+		//receive world parts and re-gather them
+		for i := 0; i < p.threads; i++{
+			nextWorldPart := <- out[i]
+			for y := 1; y <= subHeight; y++{
+				for x := 0; x < p.imageHeight; x++{
+					world[subHeight * i + y - 1][x] = nextWorldPart[y][x]
+				}
+			}
 		}
 	}
 
@@ -160,6 +158,9 @@ func distributor(p golParams, d distributorChans, alive chan []cell) {
 		}
 	}
 
+	d.io.command <- ioOutput
+	d.io.filename <- strings.Join([]string{strconv.Itoa(p.imageWidth), strconv.Itoa(p.imageHeight)}, "x")
+	d.io.outputWorld <- world
 	// Make sure that the Io has finished any output before exiting.
 	d.io.command <- ioCheckIdle
 	<-d.io.idle
